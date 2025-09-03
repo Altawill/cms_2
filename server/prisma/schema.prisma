@@ -1,0 +1,675 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String        @id @default(cuid())
+  username          String        @unique
+  email             String        @unique
+  passwordHash      String
+  firstName         String
+  lastName          String
+  phoneNumber       String?
+  department        String?
+  position          String?
+  role              String        // PMO, AREA_MANAGER, PROJECT_MANAGER, ZONE_MANAGER, SITE_ENGINEER, CASHIER, VIEWER, ADMIN
+  orgUnitId         String?       // Primary organizational unit assignment
+  isActive          Boolean       @default(true)
+  lastLogin         DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  
+  // Relations
+  primaryOrgUnit    OrgUnit?      @relation("PrimaryUsers", fields: [orgUnitId], references: [id])
+  orgAssignments    UserOrgAssignment[]
+  roles             UserRole[]
+  siteAccess        UserSiteAccess[]
+  activities        UserActivity[]
+  auditLogs         AuditLog[]    @relation("AuditUser")
+  approvalSteps     ApprovalStep[]
+  notifications     Notification[]
+  
+  @@map("users")
+}
+
+model Role {
+  id            String      @id @default(cuid())
+  name          String      @unique
+  description   String?
+  isSystemRole  Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  
+  // Relations
+  permissions   RolePermission[]
+  users         UserRole[]
+  
+  @@map("roles")
+}
+
+model Permission {
+  id          String    @id @default(cuid())
+  resource    String    // 'users', 'sites', 'reports', etc.
+  action      String    // 'read', 'create', 'update', 'delete', etc.
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  roles       RolePermission[]
+  
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+model Site {
+  id          String      @id @default(cuid())
+  name        String
+  code        String?     // Project code for easier identification
+  location    String?
+  description String?
+  status      String      @default("PLANNING") // PLANNING, ACTIVE, PAUSED, COMPLETED
+  progress    Float       @default(0.0) // 0-100%
+  priority    String      @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  budget      Float?
+  spent       Float       @default(0.0)
+  startDate   DateTime?
+  targetDate  DateTime?
+  managerId   String?
+  region      String?
+  
+  // Organizational scoping - Sites must belong to a ZONE
+  orgUnitId   String      // Must be a ZONE type
+  orgUnit     OrgUnit     @relation("SiteOrgUnit", fields: [orgUnitId], references: [id])
+  
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  // Relations
+  userAccess  UserSiteAccess[]
+  tasks       Task[]
+  expenses    Expense[]
+  revenues    Revenue[]
+  employees   Employee[]
+  safes       Safe[]
+  receipts    Receipt[]
+  payrollRuns PayrollRun[]
+  
+  @@index([orgUnitId])
+  @@index([status])
+  @@map("sites")
+}
+
+// Junction tables
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
+  
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime   @default(now())
+  
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserSiteAccess {
+  id            String                @id @default(cuid())
+  userId        String
+  siteId        String
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  
+  user          User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  site          Site                  @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  permissions   UserSitePermission[]
+  
+  @@unique([userId, siteId])
+  @@map("user_site_access")
+}
+
+model UserSitePermission {
+  id               String          @id @default(cuid())
+  userSiteAccessId String
+  module           String          // 'overview', 'employees', 'equipment', etc.
+  actions          String          // JSON array of actions like ["view", "edit", "create"]
+  createdAt        DateTime        @default(now())
+  
+  userSiteAccess   UserSiteAccess  @relation(fields: [userSiteAccessId], references: [id], onDelete: Cascade)
+  
+  @@unique([userSiteAccessId, module])
+  @@map("user_site_permissions")
+}
+
+model UserActivity {
+  id          String    @id @default(cuid())
+  userId      String
+  action      String
+  resource    String
+  resourceId  String?
+  metadata    String?   // JSON string for additional data
+  createdAt   DateTime  @default(now())
+  
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("user_activities")
+}
+
+// Organizational Hierarchy
+model OrgUnit {
+  id          String    @id @default(cuid())
+  type        String    // PMO, AREA, PROJECT, ZONE
+  name        String
+  code        String?
+  parentId    String?
+  region      String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Self-referential hierarchy
+  parent      OrgUnit?  @relation("OrgHierarchy", fields: [parentId], references: [id])
+  children    OrgUnit[] @relation("OrgHierarchy")
+  
+  // Relations
+  primaryUsers    User[]          @relation("PrimaryUsers")
+  userAssignments UserOrgAssignment[]
+  sites           Site[]          @relation("SiteOrgUnit")
+  tasks           Task[]
+  expenses        Expense[]
+  revenues        Revenue[]
+  safes           Safe[]
+  safeTransactions SafeTransaction[]
+  payrollRuns     PayrollRun[]
+  approvalWorkflows ApprovalWorkflow[]
+  
+  @@index([parentId])
+  @@index([type])
+  @@map("org_units")
+}
+
+// Multi-scope user assignments
+model UserOrgAssignment {
+  id          String    @id @default(cuid())
+  userId      String
+  orgUnitId   String
+  role        String    // Override role for this specific unit
+  createdAt   DateTime  @default(now())
+  
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgUnit     OrgUnit   @relation(fields: [orgUnitId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, orgUnitId])
+  @@map("user_org_assignments")
+}
+
+// Audit logging for all changes
+model AuditLog {
+  id          String    @id @default(cuid())
+  entityType  String    // User, Site, Task, Expense, etc.
+  entityId    String
+  action      String    // CREATE, UPDATE, DELETE, APPROVE, REJECT
+  userId      String
+  timestamp   DateTime  @default(now())
+  beforeData  String?   // JSON of entity before change
+  afterData   String?   // JSON of entity after change
+  metadata    String?   // Additional context
+  
+  user        User      @relation("AuditUser", fields: [userId], references: [id])
+  
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([timestamp])
+  @@map("audit_logs")
+}
+
+// Domain Entities with Organizational Scoping
+model Task {
+  id              String      @id @default(cuid())
+  siteId          String
+  orgUnitId       String      // Derived from site's zone
+  code            String      // Human-readable like "TASK-0001"
+  name            String
+  description     String
+  category        String      // GYPSUM, MEP, CIVIL, etc.
+  status          String      @default("PLANNED") // PLANNED, IN_PROGRESS, ON_HOLD, COMPLETED, CANCELLED
+  progress        Float       @default(0.0) // 0-100%
+  priority        String      @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  startDate       DateTime?
+  expectedEndDate DateTime?
+  actualEndDate   DateTime?
+  location        String?
+  manpower        Int         @default(1)
+  executorId      String?     // FK to employees
+  supervisorId    String?
+  budgetAmount    Float?
+  costToDate      Float       @default(0.0)
+  
+  // Approval workflow
+  approvalStatus  String      @default("PENDING") // PENDING, APPROVED, REJECTED
+  currentApprover String?     // Current approver role
+  requestedBy     String
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  
+  createdBy       String
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  archived        Boolean     @default(false)
+  
+  // Relations
+  site            Site        @relation(fields: [siteId], references: [id])
+  orgUnit         OrgUnit     @relation(fields: [orgUnitId], references: [id])
+  updates         TaskUpdate[]
+  approvals       TaskApproval[]
+  
+  @@index([siteId])
+  @@index([orgUnitId])
+  @@index([status])
+  @@index([approvalStatus])
+  @@map("tasks")
+}
+
+model TaskUpdate {
+  id            String    @id @default(cuid())
+  taskId        String
+  timestamp     DateTime  @default(now())
+  progressDelta Float     // e.g., +10
+  progressAfter Float     // 0-100
+  note          String
+  manpower      Int?
+  location      String?
+  executedById  String?
+  enteredById   String
+  statusChange  String?   // If status changed
+  issues        String?   // JSON array of issues
+  
+  task          Task      @relation(fields: [taskId], references: [id])
+  
+  @@index([taskId])
+  @@map("task_updates")
+}
+
+model TaskApproval {
+  id          String    @id @default(cuid())
+  taskId      String
+  level       String    // ENGINEER, SITE_MANAGER, PROJECT_MANAGER
+  approvedById String?
+  approvedAt  DateTime?
+  status      String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  remark      String?
+  createdAt   DateTime  @default(now())
+  
+  task        Task      @relation(fields: [taskId], references: [id])
+  
+  @@index([taskId])
+  @@map("task_approvals")
+}
+
+model Expense {
+  id          String    @id @default(cuid())
+  siteId      String
+  orgUnitId   String    // Derived from site's zone
+  category    String
+  itemName    String
+  supplier    String
+  qty         Float
+  unitPrice   Float
+  total       Float
+  date        DateTime
+  
+  // Approval workflow with thresholds
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  currentApprover String?   // Current approver role
+  requestedBy     String
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  approvalTrail   String?   // JSON array of approval steps
+  
+  createdBy   String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  site        Site      @relation(fields: [siteId], references: [id])
+  orgUnit     OrgUnit   @relation(fields: [orgUnitId], references: [id])
+  
+  @@index([siteId])
+  @@index([orgUnitId])
+  @@index([status])
+  @@index([date])
+  @@map("expenses")
+}
+
+model Revenue {
+  id          String    @id @default(cuid())
+  siteId      String
+  orgUnitId   String    // Derived from site's zone
+  clientId    String
+  itemName    String
+  qty         Float
+  unitPrice   Float
+  total       Float
+  paidAmount  Float     @default(0.0)
+  dueDate     DateTime?
+  status      String    @default("OPEN") // OPEN, PARTIAL, PAID
+  date        DateTime
+  
+  createdBy   String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  site        Site      @relation(fields: [siteId], references: [id])
+  orgUnit     OrgUnit   @relation(fields: [orgUnitId], references: [id])
+  client      Client    @relation(fields: [clientId], references: [id])
+  
+  @@index([siteId])
+  @@index([orgUnitId])
+  @@index([clientId])
+  @@index([status])
+  @@map("revenues")
+}
+
+model Client {
+  id          String    @id @default(cuid())
+  name        String
+  email       String?
+  phone       String?
+  address     String?
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  revenues    Revenue[]
+  receipts    Receipt[]
+  
+  @@map("clients")
+}
+
+model Receipt {
+  id            String    @id @default(cuid())
+  clientId      String
+  siteId        String?
+  receiptNumber String    @unique
+  total         Float
+  paid          Float
+  remaining     Float
+  dueDate       DateTime?
+  kind          String    @default("MANUAL") // MANUAL, AUTO
+  pdfUrl        String?
+  createdBy     String
+  createdAt     DateTime  @default(now())
+  
+  // Relations
+  client        Client    @relation(fields: [clientId], references: [id])
+  site          Site?     @relation(fields: [siteId], references: [id])
+  
+  @@index([clientId])
+  @@index([siteId])
+  @@map("receipts")
+}
+
+model Employee {
+  id              String    @id @default(cuid())
+  siteId          String
+  employeeNumber  String    @unique
+  firstName       String
+  lastName        String
+  email           String?
+  phone           String?
+  nationalId      String?
+  dateOfBirth     DateTime?
+  address         String?
+  position        String
+  department      String?
+  hireDate        DateTime
+  terminationDate DateTime?
+  status          String    @default("ACTIVE") // ACTIVE, INACTIVE, TERMINATED, ON_LEAVE
+  
+  // Payroll information
+  salaryType      String    @default("MONTHLY") // HOURLY, MONTHLY, FIXED
+  salaryAmount    Float
+  currency        String    @default("LYD")
+  overtimeRate    Float     @default(1.5)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  active          Boolean   @default(true)
+  
+  // Relations
+  site            Site      @relation(fields: [siteId], references: [id])
+  payslips        Payslip[]
+  
+  @@index([siteId])
+  @@index([status])
+  @@map("employees")
+}
+
+model Safe {
+  id          String    @id @default(cuid())
+  siteId      String?
+  orgUnitId   String    // For central safes, use PMO unit
+  name        String
+  balance     Float     @default(0.0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  site            Site?              @relation(fields: [siteId], references: [id])
+  orgUnit         OrgUnit            @relation(fields: [orgUnitId], references: [id])
+  transactions    SafeTransaction[]
+  
+  @@index([siteId])
+  @@index([orgUnitId])
+  @@map("safes")
+}
+
+model SafeTransaction {
+  id                  String    @id @default(cuid())
+  safeId              String
+  orgUnitId           String    // Scope transaction to org unit
+  type                String    // DEPOSIT, WITHDRAW, TRANSFER
+  amount              Float
+  note                String?
+  counterpartySafeId  String?   // For transfers
+  
+  // Approval workflow
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  currentApprover String?   // Current approver role
+  requestedBy     String
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  
+  createdBy       String
+  createdAt       DateTime  @default(now())
+  
+  // Relations
+  safe            Safe      @relation(fields: [safeId], references: [id])
+  orgUnit         OrgUnit   @relation(fields: [orgUnitId], references: [id])
+  
+  @@index([safeId])
+  @@index([orgUnitId])
+  @@index([status])
+  @@map("safe_transactions")
+}
+
+model PayrollRun {
+  id          String    @id @default(cuid())
+  siteId      String?
+  orgUnitId   String    // Scope to org unit
+  month       Int
+  year        Int
+  status      String    @default("DRAFT") // DRAFT, PENDING_APPROVAL, APPROVED, PAID, CANCELLED
+  
+  // Totals
+  baseTotal       Float     @default(0.0)
+  overtimeTotal   Float     @default(0.0)
+  bonusTotal      Float     @default(0.0)
+  deductionTotal  Float     @default(0.0)
+  netTotal        Float     @default(0.0)
+  
+  // Approval workflow
+  currentApprover String?   // Current approver role
+  approvedBy      String?
+  approvedAt      DateTime?
+  approvalNotes   String?
+  
+  createdBy   String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  site        Site?     @relation(fields: [siteId], references: [id])
+  orgUnit     OrgUnit   @relation(fields: [orgUnitId], references: [id])
+  payslips    Payslip[]
+  
+  @@unique([siteId, month, year])
+  @@index([orgUnitId])
+  @@index([status])
+  @@map("payroll_runs")
+}
+
+model Payslip {
+  id              String       @id @default(cuid())
+  employeeId      String
+  payrollRunId    String?
+  startDate       DateTime
+  endDate         DateTime
+  payDate         DateTime?
+  
+  // Calculations
+  workingDays     Int
+  actualDaysWorked Int
+  overtimeHours   Float        @default(0.0)
+  
+  // Earnings
+  basicSalary     Float
+  overtimePay     Float        @default(0.0)
+  allowances      String?      // JSON array
+  totalEarnings   Float
+  
+  // Deductions
+  deductions      String?      // JSON array
+  totalDeductions Float        @default(0.0)
+  
+  // Final
+  netSalary       Float
+  
+  // Status and approval
+  status          String       @default("DRAFT") // DRAFT, PENDING_APPROVAL, APPROVED, PAID
+  approvedBy      String?
+  approvedAt      DateTime?
+  paidBy          String?
+  paidAt          DateTime?
+  paymentMethod   String?      // CASH, BANK_TRANSFER, CHECK
+  paymentReference String?
+  
+  createdBy       String
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  // Relations
+  employee        Employee     @relation(fields: [employeeId], references: [id])
+  payrollRun      PayrollRun?  @relation(fields: [payrollRunId], references: [id])
+  
+  @@index([employeeId])
+  @@index([payrollRunId])
+  @@index([status])
+  @@map("payslips")
+}
+
+// Approval Workflow Models
+model ApprovalWorkflow {
+  id              String    @id @default(cuid())
+  entityType      String    // expense, task, safeTransaction, payrollRun
+  entityId        String    // ID of the entity being approved
+  requestedBy     String    // User who requested approval
+  currentApprover String?   // Current approver role
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  amount          Float?    // Amount being approved (if applicable)
+  orgUnitId       String    // Organizational scope
+  approvalChain   String?   // JSON array of approval steps
+  metadata        String?   // Additional context as JSON
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // Relations
+  orgUnit         OrgUnit   @relation(fields: [orgUnitId], references: [id])
+  steps           ApprovalStep[]
+  
+  @@index([entityType, entityId])
+  @@index([status])
+  @@index([currentApprover])
+  @@index([orgUnitId])
+  @@map("approval_workflows")
+}
+
+model ApprovalStep {
+  id                   String            @id @default(cuid())
+  approvalWorkflowId   String
+  role                 String            // Role required for this approval step
+  order                Int               // Order in approval chain
+  status               String            @default("PENDING") // PENDING, APPROVED, REJECTED, SKIPPED
+  approvedBy           String?
+  approvedAt           DateTime?
+  remark               String?
+  requiredThreshold    Float?            // Required threshold for this step
+  createdAt            DateTime          @default(now())
+  
+  // Relations
+  workflow             ApprovalWorkflow  @relation(fields: [approvalWorkflowId], references: [id], onDelete: Cascade)
+  approver             User?             @relation(fields: [approvedBy], references: [id])
+  
+  @@index([approvalWorkflowId])
+  @@index([status])
+  @@map("approval_steps")
+}
+
+// Notification system for approvals
+model Notification {
+  id          String    @id @default(cuid())
+  userId      String    // Recipient
+  type        String    // APPROVAL_REQUIRED, APPROVED, REJECTED, REMINDER
+  title       String
+  message     String
+  entityType  String?   // Related entity type
+  entityId    String?   // Related entity ID
+  isRead      Boolean   @default(false)
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  
+  // Relations
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}

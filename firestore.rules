@@ -1,0 +1,154 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN';
+    }
+    
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    
+    function hasPermission(siteId, module, operation) {
+      // Admins have full access
+      if (getUserRole() == 'ADMIN') return true;
+      
+      // Check user site permissions
+      let userSiteRoleId = request.auth.uid + '_' + siteId;
+      return exists(/databases/$(database)/documents/userSiteRoles/$(userSiteRoleId)) &&
+             get(/databases/$(database)/documents/userSiteRoles/$(userSiteRoleId)).data.permissions[module][operation] == true;
+    }
+    
+    function isOwnerOrHasPermission(siteId, module, operation) {
+      return request.auth.uid == resource.data.createdBy || hasPermission(siteId, module, operation);
+    }
+    
+    // Settings - Admin only
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    
+    // Users - Admin only for create/delete, users can read their own data
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create, delete: if isAdmin();
+      allow update: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+    }
+    
+    // User site roles - Admin only
+    match /userSiteRoles/{roleId} {
+      allow read: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.userId);
+      allow write: if isAdmin();
+    }
+    
+    // Sites - Role-based access
+    match /sites/{siteId} {
+      allow read: if isAuthenticated() && (isAdmin() || hasPermission(siteId, 'sites', 'read'));
+      allow create: if isAuthenticated() && (isAdmin() || hasPermission(siteId, 'sites', 'create'));
+      allow update: if isAuthenticated() && (isAdmin() || hasPermission(siteId, 'sites', 'update'));
+      allow delete: if isAuthenticated() && (isAdmin() || hasPermission(siteId, 'sites', 'delete'));
+    }
+    
+    // Employees - Site-specific permissions
+    match /employees/{employeeId} {
+      allow read: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'employees', 'read'));
+      allow create: if isAuthenticated() && (isAdmin() || hasPermission(request.resource.data.siteId, 'employees', 'create'));
+      allow update: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'employees', 'update'));
+      allow delete: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'employees', 'delete'));
+    }
+    
+    // Safes - Site-specific permissions
+    match /safes/{safeId} {
+      allow read: if isAuthenticated() && (isAdmin() || 
+                     (resource.data.siteId == null) || // Central safe
+                     hasPermission(resource.data.siteId, 'safes', 'read'));
+      allow create: if isAuthenticated() && (isAdmin() || 
+                       (request.resource.data.siteId == null) || // Central safe
+                       hasPermission(request.resource.data.siteId, 'safes', 'create'));
+      allow update: if isAuthenticated() && (isAdmin() || 
+                       (resource.data.siteId == null) || // Central safe
+                       hasPermission(resource.data.siteId, 'safes', 'update'));
+      allow delete: if isAuthenticated() && (isAdmin() || 
+                       (resource.data.siteId == null) || // Central safe
+                       hasPermission(resource.data.siteId, 'safes', 'delete'));
+    }
+    
+    // Safe transactions - Site-specific permissions with balance protection
+    match /safeTransactions/{transactionId} {
+      allow read: if isAuthenticated() && (isAdmin() || 
+                     exists(/databases/$(database)/documents/safes/$(resource.data.safeId)));
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.createdBy;
+      allow update, delete: if false; // Transactions are immutable
+    }
+    
+    // Expenses - Site-specific permissions
+    match /expenses/{expenseId} {
+      allow read: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'expenses', 'read'));
+      allow create: if isAuthenticated() && (isAdmin() || hasPermission(request.resource.data.siteId, 'expenses', 'create')) &&
+                       request.auth.uid == request.resource.data.createdBy;
+      allow update: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'expenses', 'update'));
+      allow delete: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'expenses', 'delete'));
+    }
+    
+    // Revenues - Site-specific permissions
+    match /revenues/{revenueId} {
+      allow read: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'revenues', 'read'));
+      allow create: if isAuthenticated() && (isAdmin() || hasPermission(request.resource.data.siteId, 'revenues', 'create')) &&
+                       request.auth.uid == request.resource.data.createdBy;
+      allow update: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'revenues', 'update'));
+      allow delete: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'revenues', 'delete'));
+    }
+    
+    // Clients - Global read, restricted write
+    match /clients/{clientId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+    
+    // Receipts - Creator or admin access
+    match /receipts/{receiptId} {
+      allow read: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.createdBy);
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.createdBy;
+      allow update: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.createdBy);
+      allow delete: if isAdmin();
+    }
+    
+    // Payroll runs - Site-specific permissions
+    match /payrollRuns/{payrollRunId} {
+      allow read: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'payroll', 'read'));
+      allow create: if isAuthenticated() && (isAdmin() || hasPermission(request.resource.data.siteId, 'payroll', 'create')) &&
+                       request.auth.uid == request.resource.data.createdBy;
+      allow update: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'payroll', 'update'));
+      allow delete: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'payroll', 'delete'));
+    }
+    
+    // Payroll items - Linked to payroll runs
+    match /payrollItems/{payrollItemId} {
+      allow read, write: if isAuthenticated() && (isAdmin() || 
+                             exists(/databases/$(database)/documents/payrollRuns/$(resource.data.payrollRunId)));
+    }
+    
+    // Price history - Site-specific read, system write
+    match /priceHistory/{priceHistoryId} {
+      allow read: if isAuthenticated() && (isAdmin() || hasPermission(resource.data.siteId, 'expenses', 'read'));
+      allow write: if isAuthenticated(); // System can write for variance tracking
+    }
+    
+    // Activity logs - Read only for authorized users
+    match /activityLogs/{logId} {
+      allow read: if isAuthenticated() && (isAdmin() || request.auth.uid == resource.data.byUser);
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.byUser;
+      allow update, delete: if false; // Logs are immutable
+    }
+  }
+}
